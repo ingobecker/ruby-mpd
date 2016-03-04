@@ -48,13 +48,14 @@ RSpec.describe 'MPD' do
     end
 
     context "when not yet connected" do
+      let(:password) { 'foo' }
       before do
         expect(subject).to receive(:connected?).and_return(false)
         expect(subject).to receive(:socket).and_return(double(gets: 'OK MPD 1'))
       end
 
       it 'calls #authenticate' do
-        expect(subject).to receive(:authenticate)
+        expect(subject).to receive(:send_command).with(:password, password)
         subject.connect
       end
     end

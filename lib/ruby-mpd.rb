@@ -55,6 +55,7 @@ class MPD
     @port = port
     @options = {callbacks: false}.merge(opts)
     @password = opts.delete(:password) || nil
+    @socket = [nil, nil]
     reset_vars
 
     @mutex = Mutex.new
@@ -96,23 +97,23 @@ class MPD
   #
   # @return [true] Successfully connected.
   # @raise [MPDError] If connect is called on an already connected instance.
-  def connect(callbacks = nil)
-    raise ConnectionError, 'Already connected!' if connected?
+  def connect(ctx_idle = false)
+    raise ConnectionError, 'Already connected!' if connected?(ctx_idle)
 
     # by protocol, we need to get a 'OK MPD <version>' reply
     # should we fail to do so, the connection was unsuccessful
-    unless response = socket.gets
-      reset_vars
+    unless response = socket(ctx_idle).gets
+      reset_vars(ctx_idle)
       raise ConnectionError, 'Unable to connect (possibly too many connections open)'
     end
 
-    authenticate
+    send_command(:password, @password){ctx_idle} if @password
     @version = response.chomp.gsub('OK MPD ', '') # Read the version
 
-    if callbacks
-      warn "Using 'true' or 'false' as an argument to MPD#connect has been deprecated, and will be removed in the future!"
-      @options.merge!(callbacks: callbacks)
-    end
+    #if callbacks
+    #  warn "Using 'true' or 'false' as an argument to MPD#connect has been deprecated, and will be removed in the future!"
+    #  @options.merge!(callbacks: callbacks)
+    #end
 
     callback_thread if @options[:callbacks]
     return true
@@ -121,36 +122,37 @@ class MPD
   # Check if the client is connected.
   #
   # @return [Boolean] True only if the server responds otherwise false.
-  def connected?
-    return false unless @socket
-    send_command(:ping) rescue false
+  def connected?(ctx_idle = false)
+    return false unless socket(ctx_idle, false)
+    send_command(:ping){ctx_idle} rescue false
   end
 
   # Disconnect from the MPD daemon. This has no effect if the client is not
   # connected. Reconnect using the {#connect} method. This will also stop
   # the callback thread, thus disabling callbacks.
   # @return [Boolean] True if successfully disconnected, false otherwise.
-  def disconnect
-    @cb_thread[:stop] = true if @cb_thread
+  def disconnect(ctx_idle = false)
+    @cb_thread[:stop] = true if @cb_thread && !ctx_idle
 
-    return false unless @socket
+    s = socket(ctx_idle, false)
+    return false unless s
 
     begin
-      @socket.puts 'close'
-      @socket.close
+      s.puts 'close'
+      s.close
     rescue Errno::EPIPE
       # socket was forcefully closed
     end
 
-    reset_vars
+    reset_vars(ctx_idle)
     return true
   end
 
   # Attempts to reconnect to the MPD daemon.
   # @return [Boolean] True if successfully reconnected, false otherwise.
-  def reconnect
-    disconnect
-    connect
+  def reconnect(ctx_idle = false)
+    disconnect(ctx_idle)
+    connect(ctx_idle)
   end
 
   # Kills the MPD process.
@@ -185,26 +187,28 @@ class MPD
   #
   # @return (see #handle_server_response)
   # @raise [MPDError] if the command failed.
-  def send_command(command, *args)
-    raise ConnectionError, "Not connected to the server!" unless socket
+  def send_command(command, *args, &ctx)
+    ctx_idle = block_given? && ctx.call
+    raise ConnectionError, "Not connected to the server!" unless socket(ctx_idle)
 
-    @mutex.synchronize do
-      begin
-        socket.puts convert_command(command, *args)
-        response = handle_server_response
-        return parse_response(command, response)
-      rescue Errno::EPIPE, ConnectionError
-        reconnect
-        retry
-      end
+    @mutex.lock unless ctx_idle
+    begin
+      socket(ctx_idle).puts convert_command(command, *args)
+      response = handle_server_response(ctx_idle)
+      return parse_response(command, response)
+    rescue Errno::EPIPE, ConnectionError
+      reconnect
+      retry
+    ensure
+      @mutex.unlock unless ctx_idle
     end
   end
 
 private
 
   # Initialize instance variables on new object, or on disconnect.
-  def reset_vars
-    @socket = nil
+  def reset_vars(ctx_idle = false)
+    @socket[ctx_idle ? 0 : 1] = nil
     @version = nil
     @tags = nil
   end
@@ -214,7 +218,11 @@ private
   def callback_thread
     @cb_thread ||= Thread.new(self) do |mpd|
       old_status = {}
+
       while true
+        mpd.connect(true) unless mpd.connected?(true)
+
+        change = mpd.send_command(:idle){true}
         status = mpd.status rescue {}
 
         status[:connection] = mpd.connected?
@@ -232,12 +240,15 @@ private
         old_status = status
         sleep 0.1
 
-        unless status[:connection] || Thread.current[:stop]
-          sleep 2
-          mpd.connect rescue nil
-        end
+        #unless status[:connection] || Thread.current[:stop]
+        #  sleep 2
+        #  mpd.connect rescue nil
+        #end
 
-        Thread.stop if Thread.current[:stop]
+        if Thread.current[:stop]
+          Thread.stop 
+          mpd.disconnect(true)
+        end
       end
     end
     @cb_thread[:stop] = false
@@ -250,10 +261,10 @@ private
   # @return (see Parser#build_response)
   # @return [true] If "OK" is returned.
   # @raise [MPDError] If an "ACK" is returned.
-  def handle_server_response
+  def handle_server_response(ctx_idle)
     msg = ''
     while true
-      case line = socket.gets
+      case line = socket(ctx_idle).gets
       when "OK\n"
         break
       when /^ACK/
@@ -271,8 +282,12 @@ private
     raise SERVER_ERRORS[err[:code].to_i], "[#{err[:command]}] #{err[:message]}"
   end
 
-  def socket
-    @socket ||= File.exist?(@hostname) ? UNIXSocket.new(@hostname) : TCPSocket.new(@hostname, @port)
+  def socket(ctx_idle = false, init = true)
+    idx = ctx_idle ? 0 : 1
+    if init
+      @socket[idx] ||= File.exist?(@hostname) ? UNIXSocket.new(@hostname) : TCPSocket.new(@hostname, @port)
+    end
+    @socket[idx]
   end
 
   SERVER_ERRORS = {
