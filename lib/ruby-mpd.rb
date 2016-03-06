@@ -213,6 +213,8 @@ private
     @tags = nil
   end
 
+  IDLE_CALLBACKS = Set[:subscription, :sticker, :output, :stored_playlist]
+
   # Constructs a callback loop thread and/or resumes it.
   # @return [Thread]
   def callback_thread
@@ -231,10 +233,15 @@ private
         status[:audio] ||= [nil, nil, nil] # samp, bits, chans
         status[:song] = mpd.current rescue nil
         status[:updating_db] ||= nil
+        status[change] = true if IDLE_CALLBACKS.include? change
 
         status.each do |key, val|
           next if val == old_status[key] # skip unchanged keys
           emit key, *val # splat arrays
+        end
+
+        IDLE_CALLBACKS.each do |key|
+          status.delete key
         end
 
         old_status = status
