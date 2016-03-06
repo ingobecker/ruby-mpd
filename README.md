@@ -219,6 +219,10 @@ ruby-mpd supports callbacks for any of the keys returned by `MPD#status`, as wel
 * *audio*: Returns three variables: sampleRate, bits and channels.
 * *updating_db*: job id
 * *error*: if there is an error, returns message here
+* *stored_playlist*: if a stored playlist has been modified
+* *sticker*: the sticker database has been modified
+* *subscription*: a client has subscribed or unsubscribed to a channel
+* *output*: an audio output has been enabled or disabled 
 
 * *connection*: Are we connected to the daemon? true or false
 
