@@ -132,7 +132,10 @@ class MPD
   # the callback thread, thus disabling callbacks.
   # @return [Boolean] True if successfully disconnected, false otherwise.
   def disconnect(ctx_idle = false)
-    @cb_thread[:stop] = true if @cb_thread && !ctx_idle
+    if @cb_thread && !ctx_idle
+      @cb_thread[:stop] = true
+      socket(true, false).puts 'noidle'
+    end
 
     s = socket(ctx_idle, false)
     return false unless s
@@ -247,14 +250,9 @@ private
         old_status = status
         sleep 0.1
 
-        #unless status[:connection] || Thread.current[:stop]
-        #  sleep 2
-        #  mpd.connect rescue nil
-        #end
-
         if Thread.current[:stop]
-          Thread.stop 
           mpd.disconnect(true)
+          Thread.stop
         end
       end
     end
